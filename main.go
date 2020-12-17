@@ -2,6 +2,8 @@ package main
 
 import (
 	"BcAddressCode/base58"
+	"bytes"
+	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
@@ -9,99 +11,102 @@ import (
 	"golang.org/x/crypto/ripemd160"
 )
 
+const VERSION  = 0X00
+
 func main() {
-	fmt.Println("Hello Word")
-	//1.生成公私钥
-	curve := elliptic.P256()
-	//椭圆曲线方程
-	//pri, err := ecdsa.GenerateKey(curve, rand.Reader)
-	//x,y可以组成公钥
-	_, x, y, err := elliptic.GenerateKey(curve, rand.Reader)
-	if err != nil {
-		fmt.Println(err.Error())
-		return
+	address := GetAddress()
+	fmt.Println(address)
+	isValid := CheckAdd(address)
+	fmt.Println(isValid)
+}
+
+//产生私钥
+func GenerateKey(curve elliptic.Curve)(*ecdsa.PrivateKey,error)  {
+	/*curve := elliptic.P256()*/
+	return ecdsa.GenerateKey(curve, rand.Reader)
+	/*if err != nil {
+		return nil, err
 	}
-	//将x,y组成公钥转换为[]byte类型
-	//公钥;x + y
-	pubKey := append(x.Bytes(), y.Bytes()...)
+	return pri, nil*/
+}
 
-	//第二步
+//非压缩格式公钥
+func GetUnCompressPub(curve elliptic.Curve,pri *ecdsa.PrivateKey) []byte {
+	return elliptic.Marshal(curve,pri.X,pri.Y)
+}
+
+//sha256 哈希
+func Sha256Hash(data []byte) ([]byte) {
 	sha256Hash := sha256.New()
-	sha256Hash.Write(pubKey)
-	pubHash256 := sha256Hash.Sum(nil)
-	//ripemd160
+	sha256Hash.Write(data)
+	return sha256Hash.Sum(nil)
+}
+
+//ripemd160 哈希
+func Ripemd160Hash(msg []byte) []byte {
 	ripemd := ripemd160.New()
-	ripemd.Write(pubHash256)
-	pubripemd160 := ripemd.Sum(nil)
+	ripemd.Write(msg)
+	return ripemd.Sum(nil)
+}
 
-	//第三步：添加版本号前缀
-	versionPubRipemd160 :=append([]byte{0x00}, pubripemd160...)
+func GetAddress() string {
+	curve := elliptic.P256()
 
-	//第四步:计算校验位
-	//1.
-	sha256Hash.Reset()//重置
-	sha256Hash.Write(versionPubRipemd160)
-	hsh1 := sha256Hash.Sum(nil)
+	pri,_:=GenerateKey(curve)
+	pub:= GetUnCompressPub(curve,pri)
 
-	//2.sha256
-	sha256Hash.Reset()//重置
-	sha256Hash.Write(hsh1)
+	//1.sha256 公钥计算
+	hash256 := Sha256Hash(pub)
+	ripemd160:= Ripemd160Hash(hash256)
+
+	//version  添加版本号作为前缀
+	//versionRipemd := append([]byte{0x00},ripemd160...)
+	versionRipemd := append([]byte{VERSION},ripemd160...)
+
+	//double hash 计算校验位
+	hash1 := Sha256Hash(versionRipemd)
+	hash2 := Sha256Hash(hash1)
+
+	//截取前四位作为校验位
+	check := hash2[:4]
+	//与versionRipemd进行拼接
+	add := append(versionRipemd,check...)
+
+	//base58编码，返回
+	return base58.Encode(add)
+
+}
+
+//校验给定的比特币的地址是否有效
+func CheckAdd(add string) bool {
+	//1.反编码
+	deAddBytes := base58.Decode(add)
+	//2.截取校验位
+	deCheck := deAddBytes[:len(deAddBytes) - 4]
+	//3.计算校验位
+	//a.获取反编码去除后四位的内容
+	versionRipemd160:=deAddBytes[:len(deAddBytes) - 4]
+	//b.双hash
+	sha256Hash := sha256.New()
+	sha256Hash.Write(versionRipemd160)
+	hash1 := sha256Hash.Sum(nil)
+
+	sha256Hash.Reset()
+	sha256Hash.Write(hash1)
 	hash2 := sha256Hash.Sum(nil)
-
-	//3.取前四个字节
-	//如何截取[]byte的前四个内容
-	check :=hash2[0:4]
-
-	//第五步，拼接校验位得到地址
-	addByes := append(versionPubRipemd160,check...)
-	fmt.Println("地址:",addByes)
-
-	//第六步
-	address := base58.Encode(addByes)
-	fmt.Println("生成的新的比特币地址:",address)
-
-
-	//-------------校验---------------//
-	/**
-	1.把地址base58解码成字节数组
-	2.把数组分成两个字节数组，字节数组（一）是后4字节数组，字节数组（二）是减去后4字节的数组
-	3.把字节数组（二）两次Sha256 Hash
-	4.取字节数组（二）hash后的前4位，跟字节数组（一）比较。如果相同校验通过。
-	5.校验通过的解码字节数组取第一个字节（0xff），得到版本号
-	6.检验版本号的合法性（根据主网参数校验）
-	 */
-
-	//base58解码
-	address1 := base58.Decode(address)
-	//fmt.Println("base58解码:",address1)
-	check1 := address1[0:21]
-	//取解码后的后四位，作为校验位
-	check2 := address1[21:25]
-	//fmt.Println("解码后的后四位:",check2)
-	//fmt.Println("截取后:",check1)
-
-	sha256Hash.Reset()
-	sha256Hash.Write(check1)
-	hash3:=sha256Hash.Sum(nil)
-
-	sha256Hash.Reset()
-	sha256Hash.Write(hash3)
-	hash4:=sha256Hash.Sum(nil)
-
-	check3 :=hash4[0:4]
-
-	if string(check3) == string(check2) {
-		fmt.Println("比特币地址有效",)
-	} else if string(check3) != string(check2) {
+	//c.截取前四位作为校验位
+	check := hash2[:4]
+	//比较
+	/*isValid := bytes.Compare(deCheck,check)
+	if isValid == 0{
+		fmt.Println("有效")
+		return true
+	}*/
+	return bytes.Compare(deCheck,check) == 0
+	/*if string(deCheck) == string(check){
+		fmt.Println("比特币地址有效")
+	}else if string(deCheck) != string(check){
 		fmt.Println("比特币地址无效")
 	}
-
-
-
-
-
-
-
-
-
+	return false*/
 }
